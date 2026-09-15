@@ -63,7 +63,12 @@ fun HistoryScreen(
     entries: List<HistoryEntry>,
     modifier: Modifier = Modifier,
 ) {
-    val sorted = remember(entries) { entries.sortedByDescending { it.createdAt } }
+    // Sorted newest-first, then deduped by dmId (keep newest). The LazyColumn
+    // keys rows by dmId, so a duplicate entry — however it appears — must
+    // never reach the list or Compose crashes with "Key ... was already used".
+    val sorted = remember(entries) {
+        entries.sortedByDescending { it.createdAt }.distinctBy { it.dmId }
+    }
     var clearDialog by remember { mutableStateOf(false) }
     val active = sorted.count { it.status == "queued" || it.status == "running" }
 

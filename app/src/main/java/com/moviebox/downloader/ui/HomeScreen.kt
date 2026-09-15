@@ -542,9 +542,13 @@ private fun ResultsGrid(
     blockedCount: Int = 0,
     onOpen: (String) -> Unit,
 ) {
+    // Safety net: the grid keys items by detailPath and Compose crashes on
+    // duplicate keys. The ViewModel already dedupes, but if a duplicate ever
+    // slips through again, drop it here instead of crashing the app.
+    val distinct = remember(results) { results.distinctBy { it.detailPath } }
     Column {
         Text(
-            "${results.size} ${if (results.size == 1) "title" else "titles"}" +
+            "${distinct.size} ${if (distinct.size == 1) "title" else "titles"}" +
                 if (blockedCount > 0) " · $blockedCount hidden by SafeSearch" else "",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -558,7 +562,7 @@ private fun ResultsGrid(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(results, key = { it.detailPath }) { item ->
+            items(distinct, key = { it.detailPath }) { item ->
                 ResultCard(item, onOpen)
             }
         }

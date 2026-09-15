@@ -267,7 +267,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _homeUi.value = HomeUiState(loading = true)
         viewModelScope.launch {
             try {
-                val raw = MovieBoxApi.search(input)
+                val fetched = MovieBoxApi.search(input)
+                // The upstream API sometimes returns the exact same row twice
+                // (aggregated sources). LazyVerticalGrid keys items by
+                // detailPath, so a duplicate crashes the app with
+                // "Key ... was already used" — dedupe before anything else.
+                val raw = fetched.distinctBy { it.detailPath }
+                if (fetched.size != raw.size) {
+                    AppLog.warn(
+                        AppLog.CAT_NET,
+                        "search returned ${fetched.size - raw.size} duplicate row(s) — dropped"
+                    )
+                }
                 lastRawResults = raw
                 val (cheapKept, cheapBlocked) = applyFilter(raw)
                 // SafeSearch v3.2: verify survivors against their detail pages
