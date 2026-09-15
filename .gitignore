@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+
+# Android build outputs
+app/build/
+*.apk
+*.aab
+
+# Local configuration (contains machine-specific paths)
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Signing
+*.jks
+*.keystore

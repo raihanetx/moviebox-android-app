@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- download arrow shaft -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51,32 h6 v24 h-6 z" />
+    <!-- down chevron -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40.5,50.5 L54,64 L67.5,50.5 L71.8,54.8 L54,72.6 L36.2,54.8 Z" />
+    <!-- tray -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,74 h36 v6 h-36 z" />
+</vector>
