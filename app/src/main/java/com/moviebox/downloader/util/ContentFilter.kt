@@ -398,4 +398,31 @@ object ContentFilter {
             hasOvaSuffix(norm(title)) ||
             hasAdultTextSignal(norm(listOf(title, description).joinToString(" "))) ||
             hasAdultTextSignal(norm(genres.joinToString(" ")))
+
+    /* ---------- wall-2 support: soft suggestive markers ---------- */
+
+    /**
+     * Romance-drama vocabulary that is perfectly normal entertainment
+     * content on its own ("Midnight Desire", "Passionate Love") and must
+     * NEVER block anything by itself. NsfwImageClassifier combines it with
+     * a sexy-leaning poster score (>= 0.55) to catch borderline softcore
+     * that slips past the hard blocklist — the "combined vote" rule.
+     */
+    private val SOFT_MARKERS = setOf(
+        "desire", "desires", "passion", "passionate", "tempt", "temptation",
+        "tempted", "forbidden", "obsession", "obsessed", "lust", "lustful",
+        "sensual", "sultry", "steamy", "cheating", "one night", "onenight",
+        "booty call", "friends with benefits", "no strings", "playboy",
+        "midnight", "after hours", "secret love", "secret desire",
+    )
+
+    private val SOFT_MARKERS_N: Set<String> = SOFT_MARKERS.map { norm(it) }.toSet()
+
+    /**
+     * Title-only soft signal for the combined-vote rule. A hit here alone
+     * changes nothing; it only matters when the poster image also leans
+     * "sexy". Checked against the RAW title (whole-phrase, normalized).
+     */
+    fun hasSoftSignal(title: String): Boolean =
+        if (title.isEmpty()) false else matches(norm(title), SOFT_MARKERS_N)
 }

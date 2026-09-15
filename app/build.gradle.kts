@@ -13,8 +13,13 @@ android {
         applicationId = "com.moviebox.downloader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.5.2"
+        versionCode = 13
+        versionName = "1.6.0"
+        ndk {
+            // real devices are ARM — drop x86/x86_64 emulator ABIs
+            // (~10 MB of useless TFLite JNI libs in sideloaded APKs)
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -35,6 +40,10 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    androidResources {
+        // keep the NSFW model mmap-able (faster load, shared pages)
+        noCompress += "tflite"
     }
 }
 
@@ -60,5 +69,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // On-device NSFW image classification (SafeSearch wall 2)
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    testImplementation("junit:junit:4.13.2")
 }

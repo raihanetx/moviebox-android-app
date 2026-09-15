@@ -30,7 +30,8 @@ needed, everything runs on the phone.
 - **Debug & diagnostics screen** (bug icon on the Home top bar):
   - One-tap **end-to-end test**: connectivity → guest token → search →
     detail → play streams → subtitles → CDN download probe (1KB Range
-    request), with per-step timing, status and the raw server response
+    request) → **NSFW poster classifier**, with per-step timing, status and
+    the raw server response
   - **Live API log** of every HTTP exchange the app makes while you use
     it
   - **Copy full report** — puts a complete diagnostic report on the
@@ -38,6 +39,20 @@ needed, everything runs on the phone.
 - Material 3 "Material You" design with dynamic color (Android 12+) and
   light/dark mode
 - No login — uses the site's guest access token
+- **SafeSearch — two walls**:
+  - **Wall 1 (text)**: site adult genre tags, a curated title blocklist,
+    hentai-OVA naming patterns, and a 400+ keyword matcher that survives
+    leet-speak, misspellings and censored spellings
+  - **Wall 2 (image)**: on-device NSFW poster classifier — the 5-class
+    GantMan/nsfw_model (drawings / hentai / neutral / porn / sexy) as a
+    float16 TensorFlow Lite model (8.7 MB) running fully offline on the
+    phone. No API keys, no per-image cost, no image ever leaves the device
+
+    Blocking profile (STRICT, tuned in `NsfwImageClassifier.kt`):
+    `porn >= 0.40`, `hentai >= 0.40`, `sexy >= 0.80` alone, or
+    `sexy >= 0.55` when the title also carries a soft suggestive marker
+    ("Midnight Desire", "Temptation…" — the combined-vote rule). Safe
+    anime/CGI art ("drawings") and normal movie posters are never blocked.
 
 ## Requirements
 
@@ -91,6 +106,25 @@ If the site ever changes its API, the endpoints live at the top of
 
 ## Notes
 
+- v1.6.0 — SafeSearch wall 2, on-device NSFW image classifier: text-only
+  filtering can't catch adult content whose title, description and genre
+  tags are all clean — the poster is the only tell. This release adds the
+  5-class GantMan/nsfw_model (drawings / hentai / neutral / porn / sexy)
+  as a float16-quantized TensorFlow Lite model (17.4 MB → 8.7 MB, score
+  drift ≤ 0.01 verified against the float32 original on real catalog
+  covers). It runs fully on-device: no API keys, no per-image cost, no
+  image ever leaves the phone, works offline. STRICT profile: porn ≥ 0.40,
+  hentai ≥ 0.40, sexy ≥ 0.80 alone, or the combined vote (sexy ≥ 0.55 +
+  soft suggestive title marker like "Midnight Desire"). Safe anime/CGI art
+  ("drawings" — Avatar, One Piece) and normal movie posters are never
+  blocked. Integrated into verifySafe() (search grid, verdicts cached per
+  detailPath) and loadDetail() (direct-link visits), plus a new E2E
+  diagnostics step that classifies a live cover and prints all 5 scores.
+  Fail-open everywhere: if the model can't load or an image can't be
+  fetched, wall 1 still works and legit content is never hidden. ARM-only
+  ABI filter cuts ~10 MB of useless x86/x86_64 TFLite JNI libs from
+  sideloaded APKs (32 MB debug APK). 14 JVM unit tests cover the verdict
+  thresholds, soft-signal detection and wall-1 regressions.
 - v1.5.2 — SafeSearch v3.2 "no poster leaks" + full crude vocabulary:
   (1) Blocked content no longer shows its cover in search results. Search
   results carry only title + genre (no description), so clean-titled adult

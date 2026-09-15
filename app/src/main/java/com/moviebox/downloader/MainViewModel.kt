@@ -24,6 +24,7 @@ import com.moviebox.downloader.data.HistoryEntry
 import com.moviebox.downloader.data.HistoryStore
 import com.moviebox.downloader.debug.AppLog
 import com.moviebox.downloader.util.ContentFilter
+import com.moviebox.downloader.util.NsfwImageClassifier
 import android.content.Context
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -181,12 +182,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Fetch each survivor's detail page and run the full isAdultDetail check
-     * (title + description + genres) so blocked posters never render.
+     * (title + description + genres) PLUS the wall-2 NSFW image check on the
+     * cover poster, so blocked posters never render.
      * Bounded concurrency (6), per-item timeout, fail-open on error: a network
      * problem must never hide legit content.
      */
     private suspend fun verifySafe(survivors: List<SearchResult>): List<SearchResult> {
         if (survivors.isEmpty()) return survivors
+        // one-time model load off the critical path of the first item
+        NsfwImageClassifier.ensureLoaded(getApplication())
         val semaphore = Semaphore(6)
         return coroutineScope {
             survivors.map { item ->
@@ -197,9 +201,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             return@withPermit if (cached) null else item
                         }
                         val verdict = try {
-                            withTimeoutOrNull(10_000) {
+                            withTimeoutOrNull(12_000) {
                                 val d = MovieBoxApi.fetchDetail(item.detailPath)
-                                ContentFilter.isAdultDetail(d.title, d.description, d.genres)
+                                val textHit = ContentFilter.isAdultDetail(d.title, d.description, d.genres)
+                                val imgHit = if (textHit) true else {
+                                    // wall 2 — classify the poster itself
+                                    NsfwImageClassifier.classifyCoverBlocking(
+                                        getApplication(), item.cover, item.title,
+                                    ).isNsfw
+                                }
+                                textHit || imgHit
                             }
                         } catch (e: Exception) {
                             AppLog.warn(
@@ -318,6 +329,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _detailUi.value = DetailUiState(
                         loading = false,
                         error = "Blocked by SafeSearch — this title looks like adult content.\n\n" +
+                            "Turn SafeSearch off on the search screen if you want to open it anyway.",
+                    )
+                    return@launch
+                }
+                // Wall 2 — the poster itself (direct-link visits skip search's
+                // verifySafe, so the hero image is checked here too).
+                if (safeSearch && NsfwImageClassifier.classifyCoverBlocking(
+                        getApplication(), d.cover, d.title,
+                    ).isNsfw
+                ) {
+                    AppLog.i(AppLog.CAT_UI, "SafeSearch blocked detail page \"${d.title}\" (NSFW poster image)")
+                    _detailUi.value = DetailUiState(
+                        loading = false,
+                        error = "Blocked by SafeSearch — this title's cover image looks like adult content.\n\n" +
                             "Turn SafeSearch off on the search screen if you want to open it anyway.",
                     )
                     return@launch
@@ -838,6 +863,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 "Play API (streams / quality)",
                 "Caption API (subtitles)",
                 "CDN download probe (Range 1KB)",
+                "NSFW poster classifier (SafeSearch wall 2)",
             )
             _debugUi.value = DebugUiState(running = true, steps = titles.map { DebugStep(it) })
 
@@ -906,6 +932,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 MovieBoxApi.probeCdn(stream.url) to Unit
             }
 
+            // Step 7 — NSFW poster classifier (wall 2)
+            runStep(7, titles[7]) {
+                val app = getApplication<Application>()
+                if (!NsfwImageClassifier.ensureLoaded(app)) {
+                    throw IllegalStateException("model failed to load — wall 2 disabled (text wall still active)")
+                }
+                val cover = detail?.cover ?: first?.cover ?: ""
+                if (cover.isEmpty()) throw IllegalStateException("no cover URL from previous steps")
+                val t0 = System.currentTimeMillis()
+                val v = NsfwImageClassifier.classifyCoverBlocking(app, cover, detail?.title ?: "")
+                val ms = System.currentTimeMillis() - t0
+                val s = v.scores ?: throw IllegalStateException("classification returned no scores (image download/decode failed?)")
+                "OK — ${s.top()} — verdict ${if (v.isNsfw) "BLOCKED (${v.reason})" else "pass"} (${ms} ms)" to v
+            }
+
             // Final report build must never crash the diagnostics coroutine
             // (e.g. SecurityException reading network state on odd OEM ROMs).
             val finalReport = try {
@@ -932,7 +973,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             updateStep(index) {
                 it.copy(status = "ok", summary = summary, raw = rawToText(raw), ms = System.currentTimeMillis() - t0)
             }
-            AppLog.ok(AppLog.CAT_LIFE, "E2E test [${index + 1}/7] ${title} — OK (${System.currentTimeMillis() - t0} ms): $summary")
+            AppLog.ok(AppLog.CAT_LIFE, "E2E test [${index + 1}/8] ${title} — OK (${System.currentTimeMillis() - t0} ms): $summary")
             value
         } catch (e: Exception) {
             val raw = ApiDebug.endStep()
@@ -944,7 +985,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ms = System.currentTimeMillis() - t0,
                 )
             }
-            AppLog.e(AppLog.CAT_LIFE, "E2E test [${index + 1}/7] ${title} — FAILED: ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            AppLog.e(AppLog.CAT_LIFE, "E2E test [${index + 1}/8] ${title} — FAILED: ${e.javaClass.simpleName}: ${e.message ?: ""}")
             null
         }
     }
