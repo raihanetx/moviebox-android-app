@@ -13,8 +13,8 @@ android {
         applicationId = "com.moviebox.downloader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.6.0"
+        versionCode = 14
+        versionName = "1.6.1"
         ndk {
             // real devices are ARM — drop x86/x86_64 emulator ABIs
             // (~10 MB of useless TFLite JNI libs in sideloaded APKs)
