@@ -27,6 +27,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
 
       - name: Generate debug keystore
         run: |
@@ -45,7 +48,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Get APK path
         id: apk
