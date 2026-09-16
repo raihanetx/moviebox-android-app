@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.moviebox.downloader.MainViewModel
+import com.moviebox.downloader.DetailUiState
 import com.moviebox.downloader.api.ContentLayout
 import com.moviebox.downloader.api.DetailData
 import com.moviebox.downloader.api.fmtSize
@@ -76,7 +77,7 @@ import com.moviebox.downloader.api.fmtSize
 @Composable
 fun DetailScreen(
     vm: MainViewModel,
-    state: MainViewModel.DetailUiState,
+    state: DetailUiState,
     bottomBarPadding: androidx.compose.ui.unit.Dp,
 ) {
     val context = LocalContext.current
@@ -154,7 +155,7 @@ private fun ErrorPanel(error: String) {
 @Composable
 private fun DetailBody(
     vm: MainViewModel,
-    state: MainViewModel.DetailUiState,
+    state: DetailUiState,
     d: DetailData,
     withStoragePermission: (() -> Unit) -> Unit,
 ) {
@@ -367,7 +368,7 @@ private fun DubChips(d: DetailData, vm: MainViewModel) {
 }
 
 @Composable
-private fun SeasonChips(state: MainViewModel.DetailUiState, d: DetailData, vm: MainViewModel) {
+private fun SeasonChips(state: DetailUiState, d: DetailData, vm: MainViewModel) {
     val seasons = (d.content as ContentLayout.Episodes).seasons
     if (seasons.size <= 1) return
     Column {
@@ -385,7 +386,7 @@ private fun SeasonChips(state: MainViewModel.DetailUiState, d: DetailData, vm: M
 }
 
 @Composable
-private fun QualityChips(state: MainViewModel.DetailUiState, vm: MainViewModel) {
+private fun QualityChips(state: DetailUiState, vm: MainViewModel) {
     Column {
         SectionLabel("QUALITY")
         when {
@@ -421,7 +422,7 @@ private fun QualityChips(state: MainViewModel.DetailUiState, vm: MainViewModel) 
 
 @Composable
 private fun SubtitleChips(
-    state: MainViewModel.DetailUiState,
+    state: DetailUiState,
     vm: MainViewModel,
     d: DetailData,
 ) {
@@ -530,7 +531,7 @@ private fun ChipRow(content: @Composable androidx.compose.foundation.layout.RowS
 @Composable
 private fun ContentList(
     vm: MainViewModel,
-    state: MainViewModel.DetailUiState,
+    state: DetailUiState,
     d: DetailData,
     withStoragePermission: (() -> Unit) -> Unit,
 ) {

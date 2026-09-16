@@ -37,6 +37,12 @@ package com.moviebox.downloader.util
  *   ("chennai" is distance 2 from "hentai" and was hiding the Indian
  *   "Beast"). Over-block accepted by design — SafeSearch is a toggle.
  *
+ *   LAYER 4 — NSFW poster image detection (TFLite MobileNetV2 quantized).
+ *   Runs ONLY on results that survive Layers 1-3. Catches hidden adult
+ *   content with no keywords in title/description/genre (e.g. "Flower and
+ *   Snake", "Hana to Hebi The Animation"). Only active when SafeSearch is ON
+ *   and NSFW detection is enabled in settings.
+ *
  *   QUERY GATE — [isAdultQuery] blocks obviously adult-intent searches
  *   BEFORE any network call.
  *
@@ -378,18 +384,54 @@ object ContentFilter {
 
     /* ---------- public API ---------- */
 
+    /* ---------- scored result (single source of the text signal) ---------- */
+
+    /**
+     * Scored version of the text layers (L1 + L2 + 2b + L3). This is the
+     * single source of truth for the *text* signal; [ContentAnalyzer] merges
+     * it with the optional image signal. Returns a 0..1 adult likelihood plus
+     * the reasons that fired, so the UI / debug log can explain a block.
+     *
+     * Each fired layer sets a floor on the score (decisive genre tag highest),
+     * and multiple signals reinforce via a probabilistic-OR in the analyzer.
+     */
+    data class FilterResult(
+        val adult: Boolean,
+        val score: Float,                 // 0..1 text-only adult likelihood
+        val reasons: List<String>,
+    )
+
+    fun filter(title: String, description: String, genres: List<String>): FilterResult {
+        val reasons = mutableListOf<String>()
+        var score = 0f
+        if (hasAdultGenre(genres)) {
+            score = maxOf(score, 0.95f)
+            reasons += "site Adult/Erotic genre tag"
+        }
+        if (matches(norm(title), BLOCKED_N) || hasOvaSuffix(norm(title))) {
+            score = maxOf(score, 0.90f)
+            reasons += "known adult title / hentai-OVA naming pattern"
+        }
+        if (hasAdultTextSignal(norm("$title $description ${genres.joinToString(" ")}"))) {
+            score = maxOf(score, 0.60f)
+            reasons += "adult keyword(s) in title/description"
+        }
+        return FilterResult(
+            adult = score >= 0.5f || hasAdultGenre(genres),
+            score = score.coerceIn(0f, 1f),
+            reasons = reasons,
+        )
+    }
+
     /**
      * QUERY GATE — is the search itself adult-intent? Blocks the search
      * before any network call. Same signals as a title check.
      */
     fun isAdultQuery(q: String): Boolean = isAdultTitle(norm(q))
 
-    /**
-     * Search-result level check (L1 + L2 + L3 on the title).
-     * Genres come from the site's "genre" CSV on each search item.
-     */
+    /** Search-result level check (L1 + L2 + L3 on the title). */
     fun isAdultResult(title: String, genres: List<String>): Boolean =
-        hasAdultGenre(genres) || isAdultTitle(norm(title))
+        filter(title, "", genres).adult
 
     /** Detail-level check: L1 + L2 + 2b-on-title + L3 over title, description and genres. */
     fun isAdultDetail(title: String, description: String, genres: List<String>): Boolean =

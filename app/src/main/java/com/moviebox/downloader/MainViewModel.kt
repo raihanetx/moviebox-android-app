@@ -1,25 +1,16 @@
 package com.moviebox.downloader
 
 import android.app.Application
-import android.app.DownloadManager
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.State
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.moviebox.downloader.api.ApiDebug
-import com.moviebox.downloader.api.CaptionItem
 import com.moviebox.downloader.api.ContentLayout
-import com.moviebox.downloader.api.DetailData
 import com.moviebox.downloader.api.MovieBoxApi
-import com.moviebox.downloader.api.PlayResult
-import com.moviebox.downloader.api.SearchResult
-import com.moviebox.downloader.api.StreamItem
 import com.moviebox.downloader.data.DownloadRepository
-import com.moviebox.downloader.data.DmStatus
 import com.moviebox.downloader.data.HistoryEntry
 import com.moviebox.downloader.data.HistoryStore
 import com.moviebox.downloader.debug.AppLog
@@ -33,29 +24,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withTimeoutOrNull
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    /* ---------------------------------------------------------------- */
-    /* Navigation                                                        */
-    /* ---------------------------------------------------------------- */
-
-    sealed class Screen {
-        object Home : Screen()
-        data class Detail(val slug: String) : Screen()
-        object Downloads : Screen()
-        object Debug : Screen()
-    }
+    /* ---- navigation (cross-cutting, kept here) ---- */
 
     var screen by mutableStateOf<Screen>(Screen.Home)
         private set
     private val backStack = ArrayDeque<Screen>()
-
     val canGoBack: Boolean get() = backStack.isNotEmpty()
 
     fun openDetail(slug: String) {
@@ -63,6 +40,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i(AppLog.CAT_NAV, "open detail page: $slug")
         backStack.addLast(screen)
         screen = Screen.Detail(slug)
+        lastSlug = slug
         loadDetail(slug)
     }
 
@@ -74,20 +52,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun navigateHome() {
-        AppLog.i(AppLog.CAT_NAV, "navigate → Home (search screen)")
+        AppLog.i(AppLog.CAT_NAV, "navigate → Home")
         backStack.clear()
         screen = Screen.Home
     }
 
     fun navigateDownloads() {
-        AppLog.i(AppLog.CAT_NAV, "navigate → Downloads (history screen)")
+        AppLog.i(AppLog.CAT_NAV, "navigate → Downloads")
         backStack.clear()
         screen = Screen.Downloads
     }
 
     fun openDebug() {
         if (screen is Screen.Debug) return
-        AppLog.i(AppLog.CAT_NAV, "open Debug screen (live activity log)")
+        AppLog.i(AppLog.CAT_NAV, "open Debug screen")
         backStack.addLast(screen)
         screen = Screen.Debug
     }
@@ -99,85 +77,61 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         is Screen.Debug -> "Debug"
     }
 
-    /* ---------------------------------------------------------------- */
-    /* Home / search                                                     */
-    /* ---------------------------------------------------------------- */
+    /* ---- search / detail state (proxied from SearchLogic) ---- */
 
     var query by mutableStateOf("")
 
-    data class HomeUiState(
-        val loading: Boolean = false,
-        val results: List<SearchResult> = emptyList(),
-        val error: String? = null,
-        val searched: Boolean = false,
-        val blockedCount: Int = 0,
-    )
+    private val _homeUi = mutableStateOf(HomeUiState())
+    val homeUi: HomeUiState get() = _homeUi.value
 
-    /** SafeSearch: hides adult titles from results & detail pages. On by default. */
+    private val _detailUi = mutableStateOf(DetailUiState())
+    val detailUi: DetailUiState get() = _detailUi.value
+
+    val recentQueries: StateFlow<List<String>> get() = searchLogic.recentQueries
+
+    var safeSearch: Boolean
+        get() = prefs.getBoolean("safe_search", true)
+        set(value) {
+            prefs.edit().putBoolean("safe_search", value).apply()
+            searchLogic.safeSearch = value
+            AppLog.i(AppLog.CAT_UI, "SafeSearch toggled ${if (value) "ON" else "OFF"}")
+            if (value) {
+                com.moviebox.downloader.util.NsfwDetector.clearCache()
+                searchLogic.verifiedAdult.clear()
+            }
+            val ui = _homeUi.value
+            if (ui.searched && searchLogic.lastRawResults.isNotEmpty()) {
+                val (kept, blocked) = searchLogic.applyFilter(searchLogic.lastRawResults)
+                _detailUi.value = _detailUi.value.copy(selectedEps = emptySet())
+                _homeUi.value = ui.copy(results = kept, blockedCount = blocked.size)
+            }
+        }
+
     private val prefs = app.getSharedPreferences("moviebox_settings", Context.MODE_PRIVATE)
 
-    /* ---------- recent searches (persisted, shown as chips on Home) ---------- */
+    /* ---- domain logic delegates ---- */
 
-    private val _recentQueries = MutableStateFlow(loadRecentQueries())
-    val recentQueries: StateFlow<List<String>> = _recentQueries.asStateFlow()
+    private val searchLogic = SearchLogic(app)
+    private val downloadLogic = DownloadLogic(
+        app = app,
+        historyStore = HistoryStore(app),
+        repo = DownloadRepository(app),
+        scope = viewModelScope,
+    )
+    private val debugLogic = DebugLogic(app)
 
-    private fun loadRecentQueries(): List<String> =
-        prefs.getString("recent_queries", null)
-            ?.split('\u0001')
-            ?.filter { it.isNotBlank() }
-            ?.take(8)
-            ?: emptyList()
+    val entries: StateFlow<List<HistoryEntry>> get() = downloadLogic.historyStoreEntries
+    val message: StateFlow<String?> get() = downloadLogic.message
+    val debugUi: StateFlow<DebugUiState> get() = debugLogic.debugUi
 
-    private fun saveRecentQuery(q: String) {
-        val next = (listOf(q) + _recentQueries.value.filter { !it.equals(q, ignoreCase = true) }).take(8)
-        _recentQueries.value = next
-        prefs.edit().putString("recent_queries", next.joinToString("\u0001")).apply()
-    }
-
-    fun removeRecentQuery(q: String) {
-        val next = _recentQueries.value.filter { !it.equals(q, ignoreCase = true) }
-        _recentQueries.value = next
-        prefs.edit().putString("recent_queries", next.joinToString("\u0001")).apply()
-    }
-
-    fun clearRecentQueries() {
-        _recentQueries.value = emptyList()
-        prefs.edit().remove("recent_queries").apply()
-    }
-
-    var safeSearch by mutableStateOf(prefs.getBoolean("safe_search", true))
-        private set
-
-    /** Raw (unfiltered) results of the last search, so toggling re-filters instantly. */
-    private var lastRawResults: List<SearchResult> = emptyList()
-
-    /**
-     * SafeSearch v3.2 detail-verification cache: detailPath -> adult verdict.
-     * Search-level data (title + genre CSV) is too thin to catch clean-titled
-     * adult items — their cover posters used to show in the grid and only got
-     * blocked after tapping. We now verify every survivor against its detail
-     * page BEFORE the grid renders, and remember the verdict.
-     */
-    private val verifiedAdult = mutableMapOf<String, Boolean>()
+    fun onMessageShown() = downloadLogic.onMessageShown()
 
     fun toggleSafeSearch() {
         safeSearch = !safeSearch
-        prefs.edit().putBoolean("safe_search", safeSearch).apply()
-        AppLog.i(AppLog.CAT_UI, "SafeSearch toggled ${if (safeSearch) "ON" else "OFF"}")
-        // re-apply the filter to the current results without a new network call
-        val ui = _homeUi.value
-        if (ui.searched && lastRawResults.isNotEmpty()) {
-            val (kept, blocked) = applyFilter(lastRawResults)
-            _homeUi.value = ui.copy(results = kept, blockedCount = blocked.size)
-        }
     }
 
-    private fun applyFilter(raw: List<SearchResult>): Pair<List<SearchResult>, List<SearchResult>> {
-        if (!safeSearch) return raw to emptyList()
-        return raw.partition {
-            !ContentFilter.isAdultResult(it.title, it.genres) &&
-                verifiedAdult[it.detailPath] != true
-        }
+    fun removeRecentQuery(q: String) {
+        searchLogic.removeRecentQuery(q)
     }
 
     /**
@@ -245,25 +199,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun search() {
         val input = query.trim()
         if (input.isEmpty()) return
-
-        // a pasted MovieBox link? -> go straight to detail
-        val slug = MovieBoxApi.resolveSlug(input)
-        if (slug != null && (input.startsWith("http", true) || input.contains('/'))) {
-            AppLog.i(AppLog.CAT_UI, "search input is a MovieBox link → resolving to detail \"$slug\"")
-            openDetail(slug)
-            return
-        }
-
-        // SafeSearch query gate: refuse obviously adult-intent searches outright
-        if (safeSearch && ContentFilter.isAdultQuery(input)) {
-            AppLog.i(AppLog.CAT_UI, "SafeSearch blocked adult-intent query \"$input\"")
-            _homeUi.value = HomeUiState(
-                error = "Blocked by SafeSearch — this search looks like adult content. Turn SafeSearch off to search for it."
-            )
-            return
-        }
-
-        AppLog.i(AppLog.CAT_UI, "searching for \"$input\"…")
+        searchLogic.query = input
         _homeUi.value = HomeUiState(loading = true)
         viewModelScope.launch {
             try {
@@ -301,36 +237,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /* ---------------------------------------------------------------- */
-    /* Detail                                                            */
-    /* ---------------------------------------------------------------- */
-
-    data class DetailUiState(
-        val loading: Boolean = false,
-        val error: String? = null,
-        val detail: DetailData? = null,
-        val selectedSe: Int = 0,
-        val selectedResolution: Int = 0,
-        val selectedSubtitles: Set<String> = emptySet(),
-        val selectedEps: Set<Pair<Int, Int>> = emptySet(),
-        val streams: List<StreamItem> = emptyList(),
-        val captions: List<com.moviebox.downloader.api.CaptionItem> = emptyList(),
-        val linksLoading: Boolean = false,
-        val linksError: String? = null,
-    )
-
-    private val _detailUi = MutableStateFlow(DetailUiState())
-    val detailUi: StateFlow<DetailUiState> = _detailUi.asStateFlow()
-
     private var lastSlug: String? = null
 
-    fun loadDetail(slug: String) {
+    private fun loadDetail(slug: String) {
         if (slug == lastSlug && _detailUi.value.detail != null) {
-            AppLog.i(AppLog.CAT_NAV, "detail for \"$slug\" already loaded — showing cached copy")
+            AppLog.i(AppLog.CAT_NAV, "detail for \"$slug\" already loaded")
             return
         }
         lastSlug = slug
-        AppLog.i(AppLog.CAT_NAV, "loading detail \"$slug\" from API…")
         _detailUi.value = DetailUiState(loading = true)
         viewModelScope.launch {
             try {
@@ -371,42 +285,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Re-runs after a dub switch (new subject) — replaces current detail. */
     fun switchDub(detailPath: String) {
         if (detailPath.isEmpty()) return
         val slug = detailPath.substringAfterLast('/')
-        AppLog.i(AppLog.CAT_UI, "dub/language switched → reloading detail as \"$slug\"")
+        AppLog.i(AppLog.CAT_UI, "dub switched → \"$slug\"")
         lastSlug = null
-        if (screen is Screen.Detail) {
-            screen = Screen.Detail(slug)
-        }
+        if (screen is Screen.Detail) screen = Screen.Detail(slug)
         loadDetail(slug)
     }
 
-    /** Retry the play/caption request (after an error or a network hiccup). */
     fun retryLinks() = refreshLinks()
 
     fun selectSeason(se: Int) {
         val ui = _detailUi.value
         if (ui.selectedSe == se) return
-        AppLog.i(AppLog.CAT_UI, "season chip tapped: S${String.format("%02d", se)} — reloading streams for the new season")
         _detailUi.value = ui.copy(selectedSe = se, selectedEps = emptySet())
         refreshLinks()
     }
 
     fun selectResolution(res: Int) {
         if (_detailUi.value.selectedResolution == res) return
-        AppLog.i(AppLog.CAT_UI, "quality chip tapped: ${res}p")
         _detailUi.value = _detailUi.value.copy(selectedResolution = res)
     }
 
     fun toggleSubtitle(lan: String) {
         val cur = _detailUi.value.selectedSubtitles
         val next = if (lan in cur) cur - lan else cur + lan
-        AppLog.i(
-            AppLog.CAT_UI,
-            "subtitle chip tapped: $lan — ${next.size} subtitle(s) will be saved next to the video",
-        )
         _detailUi.value = _detailUi.value.copy(selectedSubtitles = next)
     }
 
@@ -414,10 +318,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val key = se to ep
         val cur = _detailUi.value.selectedEps
         val next = if (key in cur) cur - key else cur + key
-        AppLog.i(
-            AppLog.CAT_UI,
-            "episode ${seasonEp(se, ep)} ${if (key in cur) "de" else ""}selected for batch download (${next.size} total)",
-        )
         _detailUi.value = _detailUi.value.copy(selectedEps = next)
     }
 
@@ -429,192 +329,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 (1..(season?.maxEp ?: 0)).map { _detailUi.value.selectedSe to it }.toSet()
             }
             is ContentLayout.Parts -> c.items.map { it.se to it.ep }.toSet()
+            else -> emptySet()
         }
-        AppLog.i(AppLog.CAT_UI, "select-all episodes tapped: ${all.size} selected")
         _detailUi.value = _detailUi.value.copy(selectedEps = all)
     }
 
     fun clearSelection() {
-        AppLog.i(AppLog.CAT_UI, "batch selection cleared")
         _detailUi.value = _detailUi.value.copy(selectedEps = emptySet())
     }
 
-    /** Fetch streams + captions for the current (detailPath, season) to build chips. */
     private fun refreshLinks() {
-        val ui = _detailUi.value
-        val d = ui.detail ?: return
-        val se = ui.selectedSe
-        val ep = if (d.content is ContentLayout.Episodes) 1 else 0
-        AppLog.i(AppLog.CAT_NET, "loading play streams + subtitles for \"${d.title}\" ${if (ep == 1) seasonEp(se, ep) else ""}…")
+        val d = _detailUi.value.detail ?: return
+        val se = _detailUi.value.selectedSe
         viewModelScope.launch {
-            _detailUi.value = _detailUi.value.copy(linksLoading = true, linksError = null)
-            try {
-                val links: PlayResult = MovieBoxApi.fetchLinks(d.detailPath, d.subjectId, se, ep)
-                val available = links.streams.map { it.resolutionInt }
-                val defaultRes = available.lastOrNull() ?: 0
-                val keepRes = _detailUi.value.selectedResolution
-                val capNames = links.captions.map { it.lanName }.toSet()
-                _detailUi.value = _detailUi.value.copy(
-                    streams = links.streams,
-                    captions = links.captions,
-                    linksLoading = false,
-                    // keep the user's pick only if it still exists in this season
-                    selectedResolution = if (keepRes > 0 && keepRes in available) keepRes else defaultRes,
-                    selectedSubtitles = _detailUi.value.selectedSubtitles.filter { it in capNames }.toSet(),
-                )
-                AppLog.ok(
-                    AppLog.CAT_NET,
-                    "QUALITY + SUBTITLES chips updated: ${links.streams.size} qualit${if (links.streams.size == 1) "y" else "ies"} (${available.joinToString { "${it}p" }}), ${links.captions.size} subtitle languages",
-                )
-            } catch (e: Exception) {
-                AppLog.e(AppLog.CAT_NET, "streams/subtitles FAILED: ${friendlyError(e)} — QUALITY and SUBTITLES sections will show a Retry button")
-                _detailUi.value = _detailUi.value.copy(linksLoading = false, linksError = friendlyError(e))
-            }
-        }
-    }
-
-    /* ---------------------------------------------------------------- */
-    /* Downloads                                                         */
-    /* ---------------------------------------------------------------- */
-
-    private val history = HistoryStore(app)
-    private val repo = DownloadRepository(app)
-
-    val entries: StateFlow<List<HistoryEntry>> = history.entries
-
-    private val _message = MutableStateFlow<String?>(null)
-    val message: StateFlow<String?> = _message.asStateFlow()
-
-    fun onMessageShown() {
-        _message.value = null
-    }
-
-    fun onPermissionDenied() {
-        AppLog.warn(AppLog.CAT_UI, "storage permission DENIED — on Android 8/9 downloads cannot be saved without it (Android 10+ does not need it)")
-        _message.value = "Storage permission is needed to save downloads"
-    }
-
-    init {
-        AppLog.i(AppLog.CAT_LIFE, "MainViewModel created — app state initialized, loading download history…")
-        viewModelScope.launch {
-            history.load()
-            refreshStatuses()
-            startPolling()
+            searchLogic.refreshLinks(
+                detail = d,
+                selectedSe = se,
+                selectedResolution = _detailUi.value.selectedResolution,
+                selectedSubtitles = _detailUi.value.selectedSubtitles,
+                onUpdated = { links, res, subs ->
+                    val available = links.streams.map { it.resolutionInt }
+                    _detailUi.value = _detailUi.value.copy(
+                        streams = links.streams,
+                        captions = links.captions,
+                        linksLoading = false,
+                        selectedResolution = res,
+                        selectedSubtitles = subs,
+                    )
+                },
+                onError = { error -> _detailUi.value = _detailUi.value.copy(linksLoading = false, linksError = error) },
+            )
         }
     }
 
     fun downloadSelected() {
-        val ui = _detailUi.value
-        val d = ui.detail ?: return
-        val eps = ui.selectedEps.sortedWith(compareBy({ it.first }, { it.second }))
-        if (eps.isEmpty()) return
-        AppLog.i(
-            AppLog.CAT_UI,
-            "batch download button tapped: ${eps.size} episode(s) @ ${ui.selectedResolution}p, ${ui.selectedSubtitles.size} subtitle track(s)",
-        )
-        viewModelScope.launch {
-            var ok = 0
-            var failed = 0
-            for ((se, ep) in eps) {
-                val res = enqueueEpisode(d, se, ep)
-                if (res) ok++ else failed++
-                delay(700) // small delay so the CDN does not rate-limit
-            }
-            _detailUi.value = _detailUi.value.copy(selectedEps = emptySet())
-            _message.value = when {
-                ok > 0 && failed > 0 -> "$ok download(s) started, $failed failed"
-                ok > 0 -> "Started $ok download${if (ok > 1) "s" else ""}"
-                else -> "Download failed — try again"
-            }
-            AppLog.ok(AppLog.CAT_DL, "batch finished: $ok started, $failed failed")
-            startPolling()
-        }
+        val d = _detailUi.value.detail ?: return
+        val eps = _detailUi.value.selectedEps.sortedWith(compareBy({ it.first }, { it.second }))
+        downloadLogic.downloadSelected(d, eps.toSet(), _detailUi.value.selectedResolution, _detailUi.value.selectedSubtitles)
+        _detailUi.value = _detailUi.value.copy(selectedEps = emptySet())
     }
 
-    /** Downloads a single episode/part without the batch bar. */
     fun downloadSingle(se: Int, ep: Int) {
         val d = _detailUi.value.detail ?: return
-        AppLog.i(AppLog.CAT_UI, "Get button tapped: ${episodeLabel(d, se, ep)} @ ${_detailUi.value.selectedResolution}p")
-        viewModelScope.launch {
-            val ok = enqueueEpisode(d, se, ep)
-            _message.value = if (ok) "Download started" else "Download failed — try again"
-            startPolling()
-        }
+        downloadLogic.downloadSingle(d, se, ep, _detailUi.value.selectedResolution)
     }
 
-    private suspend fun enqueueEpisode(d: DetailData, se: Int, ep: Int): Boolean {
-        val ui = _detailUi.value
-        AppLog.i(AppLog.CAT_DL, "resolving fresh signed link for ${episodeLabel(d, se, ep)} (links expire, so they are re-fetched per download)…")
-        return try {
-            val links = MovieBoxApi.fetchLinks(d.detailPath, d.subjectId, se, ep)
-            val stream = pickStream(links.streams, ui.selectedResolution)
-                ?: throw IllegalStateException("no stream available")
-            val fileName = buildFileName(d, se, ep, stream.resolutionInt)
-            val res = repo.enqueue(stream.url, fileName, "video/mp4")
-            val dmId = res.dmId
-            history.add(
-                HistoryEntry(
-                    dmId = dmId,
-                    title = d.title,
-                    fileName = fileName,
-                    label = episodeLabel(d, se, ep),
-                    quality = "${stream.resolutionInt}p",
-                    sizeBytes = stream.sizeBytes,
-                    cover = d.cover,
-                    detailPath = d.detailPath,
-                    subjectId = d.subjectId,
-                    se = se,
-                    ep = ep,
-                    resolution = stream.resolutionInt,
-                    mime = "video/mp4",
-                    createdAt = System.currentTimeMillis(),
-                    total = stream.sizeBytes,
-                    needsImport = res.needsImport,
-                )
-            )
-            AppLog.ok(
-                AppLog.CAT_DL,
-                "\"$fileName\" is now downloading (${stream.resolutionInt}p, ${stream.size}, DownloadManager id #$dmId)",
-            )
-            // selected subtitles -> save alongside the video
-            for (lan in ui.selectedSubtitles) {
-                val cap = links.captions.firstOrNull { it.lanName == lan } ?: continue
-                try {
-                    val srtName = fileName.removeSuffix(".mp4") + " - ${cap.lanName}.srt"
-                    val capRes = repo.enqueue(cap.url, srtName, "application/octet-stream")
-                    history.add(
-                        HistoryEntry(
-                            dmId = capRes.dmId,
-                            title = d.title,
-                            fileName = srtName,
-                            label = "${episodeLabel(d, se, ep)} · subtitle",
-                            quality = cap.lanName,
-                            sizeBytes = 0,
-                            cover = "",
-                            detailPath = d.detailPath,
-                            subjectId = d.subjectId,
-                            se = se,
-                            ep = ep,
-                            resolution = stream.resolutionInt,
-                            mime = "application/octet-stream",
-                            isSubtitle = true,
-                            createdAt = System.currentTimeMillis(),
-                            needsImport = capRes.needsImport,
-                        )
-                    )
-                    AppLog.ok(AppLog.CAT_DL, "subtitle file queued too: \"$srtName\" (id #${capRes.dmId})")
-                } catch (_: Exception) {
-                }
-            }
-            true
-        } catch (e: Exception) {
-            AppLog.e(
-                AppLog.CAT_DL,
-                "could NOT start download ${episodeLabel(d, se, ep)}: ${friendlyError(e)}",
-                "the signed-link fetch or the DownloadManager enqueue failed — check the NET and DL entries above for the exact reason",
-            )
-            false
-        }
+    fun onPermissionDenied() {
+        AppLog.warn(AppLog.CAT_UI, "storage permission denied", "")
     }
 
     fun redownload(entry: HistoryEntry) {
@@ -1163,4 +924,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             else -> "$name: $msg"
         }
     }
+    fun buildReport(): String = debugLogic.buildReport()
+    fun clearDebugLog() = debugLogic.clearDebugLog()
+    fun deviceInfo(): String = debugLogic.deviceInfo()
+    fun fullLogText(): String = debugLogic.fullLogText()
+    fun shareFullLog(context: Context) = debugLogic.shareFullLog(context)
+    fun previousSessionText(): String = debugLogic.previousSessionText()
+    fun clearAppLog() = debugLogic.clearAppLog()
 }

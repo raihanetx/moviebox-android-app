@@ -1,5 +1,6 @@
 package com.moviebox.downloader.api
 
+import com.moviebox.downloader.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,21 +43,30 @@ object ApiDebug {
     private val stepBuf = ArrayDeque<Exchange>()
 
     /** Start capturing exchanges of the next calls into a labeled step. */
-    fun beginStep(label: String) = synchronized(lock) {
-        stepLabel = label
-        capturing = true
-        stepBuf.clear()
+    fun beginStep(label: String) {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return
+        synchronized(lock) {
+            stepLabel = label
+            capturing = true
+            stepBuf.clear()
+        }
     }
 
     /** Stop capturing; returns the exchanges recorded for this step. */
-    fun endStep(): List<Exchange> = synchronized(lock) {
-        capturing = false
-        stepLabel = STEP_APP
-        stepBuf.toList()
+    fun endStep(): List<Exchange> {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return emptyList()
+        return synchronized(lock) {
+            capturing = false
+            stepLabel = STEP_APP
+            stepBuf.toList()
+        }
     }
 
-    fun clear() = synchronized(lock) {
-        _exchanges.value = emptyList()
+    fun clear() {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return
+        synchronized(lock) {
+            _exchanges.value = emptyList()
+        }
     }
 
     fun record(
@@ -67,6 +77,7 @@ object ApiDebug {
         ok: Boolean,
         snippet: String,
     ) {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return
         val ex = Exchange(
             id = nextId++,
             at = System.currentTimeMillis(),

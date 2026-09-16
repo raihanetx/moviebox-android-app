@@ -1,6 +1,7 @@
 package com.moviebox.downloader.debug
 
 import android.content.Context
+import com.moviebox.downloader.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,6 +94,7 @@ object AppLog {
 
     /** Called once from Application.onCreate — before anything else logs. */
     fun attach(context: Context) {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return
         synchronized(lock) {
             if (dir != null) return
             dir = context.filesDir
@@ -120,6 +122,7 @@ object AppLog {
     fun e(cat: String, msg: String, detail: String = "") = log(Level.ERROR, cat, msg, detail)
 
     fun log(level: Level, cat: String, msg: String, detail: String = "") {
+        if (!com.moviebox.downloader.BuildConfig.DEBUG) return
         synchronized(lock) { publish(make(level, cat, msg, detail)) }
     }
 
@@ -212,7 +215,10 @@ object AppLog {
             ) + "\n")
             if (++writesSinceCheck > 400) {
                 writesSinceCheck = 0
-                if (f.length() > MAX_FILE_BYTES) f.delete()
+                if (f.length() > MAX_FILE_BYTES) {
+                    val backup = File(f.parentFile, f.name + ".prev")
+                    f.renameTo(backup)
+                }
             }
         } catch (_: Exception) {
             /* logging must never crash the app */

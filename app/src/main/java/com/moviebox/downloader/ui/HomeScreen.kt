@@ -76,12 +76,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.moviebox.downloader.MainViewModel
+import com.moviebox.downloader.HomeUiState
 import com.moviebox.downloader.api.SearchResult
 
 @Composable
 fun HomeScreen(
     vm: MainViewModel,
-    state: MainViewModel.HomeUiState,
+    state: HomeUiState,
     modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current

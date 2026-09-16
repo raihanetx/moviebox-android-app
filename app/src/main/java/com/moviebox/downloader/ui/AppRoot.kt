@@ -29,20 +29,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.moviebox.downloader.MainViewModel
+import com.moviebox.downloader.Screen
 
 /** Root: scaffold + 3-tab bottom navigation (Home / Downloads / Debug). */
 @Composable
 fun MovieBoxApp() {
     val vm: MainViewModel = viewModel()
-    val homeUi by vm.homeUi.collectAsState()
-    val detailUi by vm.detailUi.collectAsState()
-    val debugUi by vm.debugUi.collectAsState()
-    val entries by vm.entries.collectAsState()
-    val message by vm.message.collectAsState()
+    val homeUi = vm.homeUi
+    val detailUi = vm.detailUi
+    val debugUi = vm.debugUi
+    val entries = vm.entries.collectAsState()
+    val message = vm.message.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(message) {
-        message?.let {
+    LaunchedEffect(message.value) {
+        message.value?.let {
             snackbarHostState.showSnackbar(it)
             vm.onMessageShown()
         }
@@ -52,7 +53,7 @@ fun MovieBoxApp() {
         vm.goBack()
     }
 
-    val activeDownloads = entries.count { it.status == "queued" || it.status == "running" }
+    val activeDownloads = entries.value.count { it.status == "queued" || it.status == "running" }
 
     data class Tab(
         val label: String,
@@ -68,23 +69,23 @@ fun MovieBoxApp() {
             label = "Home",
             selectedIcon = Icons.Rounded.Home,
             unselectedIcon = Icons.Outlined.Home,
-            isSelected = { vm.screen is MainViewModel.Screen.Home },
-            onClick = { if (vm.screen !is MainViewModel.Screen.Home) vm.navigateHome() },
+            isSelected = { vm.screen is Screen.Home },
+            onClick = { if (vm.screen !is Screen.Home) vm.navigateHome() },
         ),
         Tab(
             label = "Downloads",
             selectedIcon = Icons.Rounded.Download,
             unselectedIcon = Icons.Outlined.Download,
-            isSelected = { vm.screen is MainViewModel.Screen.Downloads },
-            onClick = { if (vm.screen !is MainViewModel.Screen.Downloads) vm.navigateDownloads() },
+            isSelected = { vm.screen is Screen.Downloads },
+            onClick = { if (vm.screen !is Screen.Downloads) vm.navigateDownloads() },
             badge = activeDownloads,
         ),
         Tab(
             label = "Debug",
             selectedIcon = Icons.Rounded.BugReport,
             unselectedIcon = Icons.Outlined.BugReport,
-            isSelected = { vm.screen is MainViewModel.Screen.Debug },
-            onClick = { if (vm.screen !is MainViewModel.Screen.Debug) vm.openDebug() },
+            isSelected = { vm.screen is Screen.Debug },
+            onClick = { if (vm.screen !is Screen.Debug) vm.openDebug() },
         ),
     )
 
@@ -123,18 +124,18 @@ fun MovieBoxApp() {
             }
         },
     ) { innerPadding ->
-        when (vm.screen) {
-            is MainViewModel.Screen.Home ->
+        when (val s = vm.screen) {
+            is Screen.Home ->
                 HomeScreen(vm, homeUi, Modifier.padding(innerPadding))
 
-            is MainViewModel.Screen.Detail ->
+            is Screen.Detail ->
                 DetailScreen(vm, detailUi, innerPadding.calculateBottomPadding())
 
-            is MainViewModel.Screen.Downloads ->
-                HistoryScreen(vm, entries, Modifier.padding(innerPadding))
+            is Screen.Downloads ->
+                HistoryScreen(vm, entries.value, Modifier.padding(innerPadding))
 
-            is MainViewModel.Screen.Debug ->
-                DebugScreen(vm, debugUi, Modifier.padding(innerPadding))
+            is Screen.Debug ->
+                DebugScreen(vm, debugUi.value, Modifier.padding(innerPadding))
         }
     }
 }

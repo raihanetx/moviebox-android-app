@@ -2,6 +2,7 @@ package com.moviebox.downloader.api
 
 import com.moviebox.downloader.debug.AppLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -136,48 +137,94 @@ object MovieBoxApi {
         method: String = "GET",
         body: String? = null,
     ): JsonObject = withContext(Dispatchers.IO) {
-        val t0 = System.currentTimeMillis()
-        val builder = Request.Builder().url(url).headers(headers)
-        when (method) {
-            "POST" -> builder.post((body ?: "").toRequestBody("application/json".toMediaType()))
-            else -> builder.get()
-        }
-        AppLog.i(
-            AppLog.CAT_NET,
-            "→ $method ${pathOf(url)}",
-            requestDetail(url, headers, method, body),
-        )
-        var httpCode: Int? = null
-        try {
-            client.newCall(builder.build()).execute().use { r ->
-                httpCode = r.code
-                val text = r.body?.string() ?: ""
-                val ms = System.currentTimeMillis() - t0
-                AppLog.ok(
+        var attempt = 0
+        var lastHttpCode: Int? = null
+        var lastEx: Exception? = null
+        while (attempt < MAX_ATTEMPTS) {
+            if (attempt > 0) {
+                val ms = backoff(attempt)
+                AppLog.warn(
                     AppLog.CAT_NET,
-                    "← HTTP ${r.code} · ${"%.1f".format(text.length / 1024.0)} KB · $ms ms · ${hostOf(url)}",
-                    responseDetail(url, r.code, r.header("Content-Type"), text),
+                    "retrying ${method} ${pathOf(url)} (${attempt + 1}/${MAX_ATTEMPTS}) after ${ms}ms — ${lastEx?.javaClass?.simpleName}: ${lastEx?.message}",
                 )
-                ApiDebug.record(method, url, httpCode, ms, r.isSuccessful, text)
-                if (!r.isSuccessful) throw IOException("HTTP ${r.code} from ${hostOf(url)}")
-                if (text.isBlank()) throw IOException("empty response from ${hostOf(url)}")
-                parseObj(text)
+                delay(ms)
             }
-        } catch (e: Exception) {
-            // network-level failure (never got a response) — record it too
-            if (httpCode == null) {
-                AppLog.e(
-                    AppLog.CAT_NET,
-                    "✗ $method ${hostOf(url)} FAILED in ${System.currentTimeMillis() - t0} ms — ${e.javaClass.simpleName}: ${e.message ?: ""}",
-                    requestDetail(url, headers, method, body),
-                )
-                ApiDebug.record(
-                    method, url, null, System.currentTimeMillis() - t0, false,
-                    "${e.javaClass.simpleName}: ${e.message}",
-                )
+            val t0 = System.currentTimeMillis()
+            val builder = Request.Builder().url(url).headers(headers)
+            when (method) {
+                "POST" -> builder.post((body ?: "").toRequestBody("application/json".toMediaType()))
+                else -> builder.get()
             }
-            throw e
+            AppLog.i(
+                AppLog.CAT_NET,
+                "→ $method ${pathOf(url)}",
+                requestDetail(url, headers, method, body),
+            )
+
+            var httpCode: Int? = null
+            var responseBody = ""
+            var rSuccessful = false
+            var contentType: String? = null
+
+            try {
+                client.newCall(builder.build()).execute().use { r ->
+                    httpCode = r.code
+                    rSuccessful = r.isSuccessful
+                    contentType = r.header("Content-Type")
+                    responseBody = r.body?.string().orEmpty()
+                }
+            } catch (e: IOException) {
+                lastEx = e
+                if (httpCode == null) {
+                    AppLog.e(
+                        AppLog.CAT_NET,
+                        "✗ $method ${hostOf(url)} FAILED — ${e.javaClass.simpleName}: ${e.message ?: ""}",
+                        requestDetail(url, headers, method, body),
+                    )
+                    ApiDebug.record(
+                        method, url, null, 0, false,
+                        "${e.javaClass.simpleName}: ${e.message}",
+                    )
+                }
+                if (attempt < MAX_ATTEMPTS - 1) {
+                    attempt++
+                    continue
+                }
+                throw e
+            }
+
+            val ms = System.currentTimeMillis() - t0
+            AppLog.ok(
+                AppLog.CAT_NET,
+                "← HTTP ${httpCode} · ${"%.1f".format(responseBody.length / 1024.0)} KB · $ms ms · ${hostOf(url)}",
+                responseDetail(url, httpCode ?: 0, contentType, responseBody),
+            )
+            ApiDebug.record(method, url, httpCode, ms, rSuccessful, responseBody)
+
+            if (httpCode == 401 && attempt < MAX_ATTEMPTS - 1) {
+                synchronized(tokenMutex) {
+                    cachedToken = null
+                    tokenExpiry = 0
+                }
+                AppLog.warn(AppLog.CAT_NET, "401 Unauthorized — invalidated guest token, retrying with fresh token")
+                lastEx = IOException("401 Unauthorized")
+                attempt++
+                continue
+            }
+            lastHttpCode = httpCode
+
+            if (!rSuccessful) throw IOException("HTTP $httpCode from ${hostOf(url)}")
+            if (responseBody.isNullOrBlank()) throw IOException("empty response from ${hostOf(url)}")
+            return@withContext parseObj(responseBody)
         }
+        throw lastEx ?: IOException("HTTP ${lastHttpCode ?: "no response"} from ${hostOf(url)}")
+    }
+
+    private const val MAX_ATTEMPTS = 3
+
+    private suspend fun backoff(attempt: Int): Long {
+        val base = 500L * (1L shl (attempt - 1))
+        return base.coerceAtMost(4000L) + (0L..200L).random()
     }
 
     /** Request dump for the debug log — the bearer token is shortened. */
@@ -207,6 +254,21 @@ object MovieBoxApi {
         val noQuery = url.substringBefore('?')
         val path = noQuery.substringAfter("wefeed-h5api-bff", noQuery)
         return path.ifEmpty { noQuery }
+    }
+
+    /**
+     * Downloads raw bytes from a URL using the shared OkHttp client.
+     * Used by NSFW detector for poster image downloads.
+     */
+    suspend fun downloadBytes(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(url)
+            .headers(baseHeaders())
+            .build()
+        client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) return@withContext null
+            r.body?.bytes()
+        }
     }
 
     /* ---------------------------------------------------------------- */

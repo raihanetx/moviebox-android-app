@@ -85,10 +85,16 @@ class HistoryStore(context: Context) {
     }
 
     private suspend fun persist(list: List<HistoryEntry>) = withContext(Dispatchers.IO) {
+        val tmp = File(file.parentFile, file.name + ".tmp")
         try {
-            file.writeText(json.encodeToString(list))
+            tmp.writeText(json.encodeToString(list))
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
         } catch (e: Exception) {
             AppLog.e(AppLog.CAT_STORE, "failed to save history.json — ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            tmp.delete()
         }
     }
 

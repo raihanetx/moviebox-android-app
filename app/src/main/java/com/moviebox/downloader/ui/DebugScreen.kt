@@ -57,6 +57,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.moviebox.downloader.MainViewModel
+import com.moviebox.downloader.DebugStep
+import com.moviebox.downloader.DebugUiState
 import com.moviebox.downloader.debug.AppLog
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -79,7 +81,7 @@ import java.util.Locale
 @Composable
 fun DebugScreen(
     vm: MainViewModel,
-    state: MainViewModel.DebugUiState,
+    state: DebugUiState,
     modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current
@@ -284,7 +286,7 @@ private fun catColor(cat: String) = when (cat) {
 @Composable
 private fun E2eTab(
     vm: MainViewModel,
-    state: MainViewModel.DebugUiState,
+    state: DebugUiState,
 ) {
     val clipboard = LocalClipboardManager.current
     Column(
@@ -367,7 +369,7 @@ private fun E2eTab(
 }
 
 @Composable
-private fun StepCard(index: Int, step: MainViewModel.DebugStep) {
+private fun StepCard(index: Int, step: DebugStep) {
     var expanded by remember(step.title) { mutableStateOf(false) }
     Card(
         modifier = Modifier
